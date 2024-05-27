@@ -13,7 +13,7 @@ enum RequestMethod {
 struct Request {
     #[allow(dead_code)]
     method: RequestMethod,
-    number: f32,
+    number: f64,
 }
 
 #[derive(Serialize, Debug)]
