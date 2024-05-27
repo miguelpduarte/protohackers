@@ -29,10 +29,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let listener = TcpListener::bind("localhost:8008").await?;
 
+    tracing::info!("Started server at {:?}", listener.local_addr());
+
     loop {
         let (socket, addr) = listener.accept().await?;
 
-        // println!("got connection from {}", addr);
         tracing::debug!(%addr, "connection");
 
         tokio::spawn(
@@ -46,36 +47,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let n = match buf_stream.read_line(&mut data).await {
                         // EOF
                         Ok(0) => {
-                            tracing::info!("Closing stream after EOF");
+                            tracing::debug!("Closing stream after EOF");
                             return
                         },
                         Ok(n) => n,
                         Err(e) => {
                             tracing::error!(err = %e, "failed to read from socket or invalid UTF-8");
-                            // eprintln!(
-                            //     "failed to read from socket or invalid UTF-8 '{addr}'; err = {:?}",
-                            //     e
-                            // );
                             return;
                         }
                     };
 
-                    // println!("got {} bytes, raw request: {}", n, &data);
-                    // println!("A:{addr} got {n} bytes");
                     tracing::debug!(n, "got bytes");
 
                     let req: Request = match serde_json::from_str(&data) {
                         Ok(r) => r,
                         Err(e) => {
-                            tracing::error!(err = %e, raw_request = data, "Invalid request");
-                            // eprintln!("Invalid request: '{:?}'; err = {:?}", &data, e);
+                            tracing::info!(err = %e, raw_request = data, "Invalid request");
                             // Write back invalid response and close connection
                             let r = buf_stream.write(b"banana\n").await;
-                            tracing::info!(?r, "result of writing invalid response");
+                            tracing::debug!(?r, "result of writing invalid response");
                             return;
                         }
                     };
-                    // println!("req: {:?}", req);
 
                     let is_prime = match req.number.fract() == 0.0 {
                         // integer, check primality
@@ -89,9 +82,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         prime: is_prime,
                     };
 
-                    // println!("responding: {:?}", res);
-                    // println!("req: {:?}, resp: {:?}", &req, &res);
-                    // println!("A:{addr} {} - {}", req.number, res.prime);
                     tracing::info!(number = req.number, is_prime = res.prime, "responding to request");
 
                     // Write the response back
@@ -101,10 +91,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let write_res = buf_stream.write(res_data.as_bytes()).await;
 
                     tracing::info!(byte_count, ?write_res, "wrote response");
+                    if byte_count != write_res.as_ref().map_or(0, |x| *x) {
+                        tracing::error!("different bytes msg and written");
+                    }
 
                     if let Err(e) = write_res {
                         tracing::error!(err = %e, "failed to write to socket");
-                        // eprintln!("failed to write to socket '{addr}'; err = {:?}", e.kind());
                         return;
                     }
 
