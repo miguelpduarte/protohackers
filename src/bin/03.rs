@@ -278,5 +278,5 @@ fn is_valid_username(username: &str) -> bool {
     // The first message from a client sets the user's name,
     // which must contain at least 1 character,
     // and must consist entirely of alphanumeric characters (uppercase, lowercase, and digits).
-    username.len() > 0 && username.chars().all(|c| char::is_ascii_alphanumeric(&c))
+    !username.is_empty() && username.chars().all(|c| char::is_ascii_alphanumeric(&c))
 }
