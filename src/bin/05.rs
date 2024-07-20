@@ -48,6 +48,13 @@ async fn handle_connection(
 
     tracing::debug!("looping waiting for input");
 
+    // TODO: Bugfix:
+    // [Thu Jun 27 23:45:38 2024 UTC] [5badname.test] NOTE:checking a user who quits without sending newline after name
+    // [Thu Jun 27 23:45:39 2024 UTC] [5badname.test] FAIL:unexpected message from server to '[secret omniscient watchman]': * SlimyFred414 has joined the room
+    // provavelmente estamos a adicionar newline a mais. Problema é perceber com o iterator do
+    // next_line() como é que isso aconteceu, porque acho que o shutdown faz um flush, e recebemos
+    // a mensagem, em vez de esperar pelo \n...
+
     // Reading and forwarding to other half
     loop {
         tokio::select! {
@@ -117,9 +124,11 @@ fn rewrite_addresses(message: &str) -> String {
     // The alternative groups can likely be handled better, but this is an easy way to avoid
     // grabbing part of an address as valid (due to using ^$).
     // Capturing groups to ensure that spaces are not removed accidentally
-    let boguscoin_addr_regex =
-        Regex::new(r"(?:(?<pre>^ ?)7[[:alnum:]]{25,34})|(?:7[[:alnum:]]{25,34}(?<post> ?$))")
-            .expect("static valid regex");
+    let boguscoin_addr_regex = Regex::new(
+        // r"(?:(?<pre>(?:^)|(?: ))7[[:alnum:]]{25,34})|(?:7[[:alnum:]]{25,34}(?<post>(?: )|(?:$)))",
+        "(?<pre>^| )?7[[:alnum:]]{25,34}(?<post>$| )",
+    )
+    .expect("static valid regex");
     boguscoin_addr_regex
         .replace_all(message, TONYS_ADDRESS_REPLACEMENT)
         .to_string()
@@ -159,6 +168,11 @@ mod test {
         // Too long shouldn't be replaced (previous bug since we did partial matching)
         let msg = String::from("This is too long: 7L2FLjJJvFQhEv29VJygHY99xzLkfvgloaRx");
         let expected = String::from("This is too long: 7L2FLjJJvFQhEv29VJygHY99xzLkfvgloaRx");
+        assert_eq!(rewrite_addresses(&msg), expected);
+
+        // Another bug with multiple addresses since the old matching broke with spaces sometimes
+        let msg = String::from("Please pay the ticket price of 15 Boguscoins to one of these addresses: 7Opb0suCE0CMLIyczQBVE2hsFxVQM8 7MnKIu4CIQqdqDdf9uVlRI2RUk 7YWHMfk9JZe0LM0g1ZauHuiSxhI");
+        let expected = String::from("Please pay the ticket price of 15 Boguscoins to one of these addresses: 7YWHMfk9JZe0LM0g1ZauHuiSxhI 7YWHMfk9JZe0LM0g1ZauHuiSxhI 7YWHMfk9JZe0LM0g1ZauHuiSxhI");
         assert_eq!(rewrite_addresses(&msg), expected);
     }
 }
