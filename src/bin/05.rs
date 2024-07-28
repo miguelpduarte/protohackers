@@ -34,45 +34,48 @@ async fn handle_connection(
     addr: core::net::SocketAddr,
 ) -> color_eyre::Result<()> {
     let (client_read, mut client_write) = stream.into_split();
-    let client_buf_read = tokio::io::BufReader::new(client_read);
+    let mut client_buf_read = tokio::io::BufReader::new(client_read);
 
     tracing::debug!("connecting to upstream");
     let (upstream_read, mut upstream_write) = TcpStream::connect("chat.protohackers.com:16963")
         .await?
         .into_split();
-    let upstream_buf_read = tokio::io::BufReader::new(upstream_read);
+    let mut upstream_buf_read = tokio::io::BufReader::new(upstream_read);
     tracing::debug!("upstream good to go");
 
-    let mut client_lines = client_buf_read.lines();
-    let mut server_lines = upstream_buf_read.lines();
+    let mut client_buf = vec![];
+    let mut server_buf = vec![];
 
     tracing::debug!("looping waiting for input");
-
-    // TODO: Bugfix:
-    // [Thu Jun 27 23:45:38 2024 UTC] [5badname.test] NOTE:checking a user who quits without sending newline after name
-    // [Thu Jun 27 23:45:39 2024 UTC] [5badname.test] FAIL:unexpected message from server to '[secret omniscient watchman]': * SlimyFred414 has joined the room
-    // provavelmente estamos a adicionar newline a mais. Problema é perceber com o iterator do
-    // next_line() como é que isso aconteceu, porque acho que o shutdown faz um flush, e recebemos
-    // a mensagem, em vez de esperar pelo \n...
 
     // Reading and forwarding to other half
     loop {
         tokio::select! {
-            client_msg = client_lines.next_line() => {
-                let client_msg = match client_msg {
-                    Ok(None) => {
-                        upstream_write.shutdown().await?;
-                        return Ok(());
-                    }
+            client_read_result = client_buf_read.read_until(b'\n', &mut client_buf) => {
+                let client_read_bytes = match client_read_result {
                     Err(e) => {
                         tracing::error!(err = %e, "failed to read new chat messages from client stream");
                         color_eyre::eyre::bail!("Error reading from client stream");
                     }
-                    Ok(Some(client_msg)) => client_msg,
+                    Ok(read_bytes) => read_bytes,
                 };
+                // Testing for connection termination under 2 conditions:
+                // - message without newline
+                // - EOF detected via 0 bytes read
+                // If so, just shut it down.
+                if client_read_bytes == 0 || *client_buf.last().unwrap() != b'\n' {
+                        upstream_write.shutdown().await?;
+                        return Ok(());
+                }
+
+                // TODO: Probably remove the call to trim. Added because the old method with
+                // the Lines iterator consumed the newline and thus the parsing logic doesn't need
+                // to be touched.
+                let client_msg = std::str::from_utf8(&client_buf).expect("valid utf8").trim_end_matches('\n');
+
 
                 tracing::debug!(client_msg, "Read client msg");
-                let client_msg = rewrite_addresses(&client_msg);
+                let client_msg = rewrite_addresses(client_msg);
                 tracing::debug!(client_msg, "rewrote client msg");
 
                 upstream_write
@@ -81,22 +84,32 @@ async fn handle_connection(
                     .wrap_err("Error writing message to server")
                     .inspect_err(|e| tracing::error!(err=%e, "failure writing message to server"))
                     .unwrap();
+
+                client_buf.clear();
             }
-            server_msg = server_lines.next_line() => {
-                let server_msg = match server_msg {
-                    Ok(None) => {
-                        client_write.shutdown().await?;
-                        return Ok(());
-                    }
+            server_read_result = upstream_buf_read.read_until(b'\n', &mut server_buf) => {
+                let server_read_bytes = match server_read_result {
                     Err(e) => {
                         tracing::error!(err = %e, "failed to read new chat messages from server stream");
                         color_eyre::eyre::bail!("Error reading from server stream");
                     }
-                    Ok(Some(server_msg)) => server_msg,
+                    Ok(read_bytes) => read_bytes,
                 };
+                // Testing for connection termination under 2 conditions:
+                // - message without newline
+                // - EOF detected via 0 bytes read
+                // If so, just shut it down.
+                if server_read_bytes == 0 || *server_buf.last().unwrap() != b'\n' {
+                        client_write.shutdown().await?;
+                        return Ok(());
+                }
+                // TODO: Probably remove the call to trim. Added because the old method with
+                // the Lines iterator consumed the newline and thus the parsing logic doesn't need
+                // to be touched.
+                let server_msg = std::str::from_utf8(&server_buf).expect("valid utf8").trim_end_matches('\n');
 
                 tracing::debug!(server_msg, "Read server msg");
-                let server_msg = rewrite_addresses(&server_msg);
+                let server_msg = rewrite_addresses(server_msg);
                 tracing::debug!(server_msg, "server msg post rewrite");
 
                 client_write
@@ -105,6 +118,8 @@ async fn handle_connection(
                     .wrap_err("Error writing message to client")
                     .inspect_err(|e| tracing::error!(err=%e, "failure writing message to client"))
                     .unwrap();
+
+                server_buf.clear();
             }
         }
     }
